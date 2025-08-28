@@ -1,0 +1,56 @@
+# Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE/editor settings
+.vscode/
+.idea/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Data and user-generated content
+FireGPT_Main/data/
+FireGPT_Main/vdb/
+FireGPT_Main/vectorDatabase/
+FireGPT_Database/flask_session/
+FireGPT_Database/images/
+FireGPT_Database/endpoint/*.json
+
+# Migrations and build artifacts
+FireGPT_Database/migrations/
+*.log
+*.sqlite3
+*.db
+
+# Environment/config/secrets
+.env
+*.env
+*.secret
+*.key
+
+# Large vector DB files
+*.faiss
+*.pkl
+
+# Test outputs and manual test cases
+FireGPT_Main/data/manualtestcasesJSON/
+
+# Ignore document registry files
+FireGPT_Main/data/documentRegistry/
+FireGPT_Main/vectorDatabase/document_registry.json
+
+# Ignore context and generated data
+FireGPT_Main/data/contextjson/
+FireGPT_Main/src/generatedData/
+
+# Ignore user-specific data
+FireGPT_Main/data/frontendUsers/
+FireGPT_Main/data/users/
