@@ -402,6 +402,68 @@ def cached_retrieve_docs(query_hash, db_path, k=8):
     )
     return retriever.invoke(query_hash)
 
+# --- Reranking Helper ---
+def rerank_documents_with_llm(query: str, docs, top_k: int = 5):
+    """Use the dedicated reranker LLM to reorder docs by relevance and select top_k.
+    Falls back gracefully to original order on any error.
+    """
+    try:
+        if not docs:
+            return []
+        max_considered = min(len(docs), 20)
+        candidates = docs[:max_considered]
+        # Build compact list of snippets
+        snippets = []
+        for i, d in enumerate(candidates):
+            text = getattr(d, 'page_content', '') or ''
+            snippet = text.replace('\n', ' ')[:500]
+            snippets.append(f"#{i}: {snippet}")
+        prompt = (
+            "You are a document reranker. Given a user query and a set of document chunks, "
+            "return ONLY a JSON array of 0-based indices ordered from most to least relevant. "
+            "Do not include any text before or after the JSON.\n\n"
+            f"Query: {query}\n\n"
+            "Document chunks:\n" + "\n".join(snippets) + "\n\nOutput:"
+        )
+        raw = reranker_llm.invoke(prompt)
+        text = str(raw).strip()
+        import json as _json
+        indices = None
+        try:
+            parsed = _json.loads(text)
+            if isinstance(parsed, dict) and isinstance(parsed.get('ordered_indices'), list):
+                indices = parsed['ordered_indices']
+            elif isinstance(parsed, list):
+                indices = parsed
+        except Exception:
+            # Try to extract a JSON array substring
+            if '[' in text and ']' in text:
+                try:
+                    start = text.index('[')
+                    end = text.index(']', start) + 1
+                    indices = _json.loads(text[start:end])
+                except Exception:
+                    indices = None
+        if not indices:
+            return candidates[:top_k]
+        # Sanitize indices
+        seen = set()
+        ordered = []
+        for x in indices:
+            try:
+                i = int(x)
+                if 0 <= i < len(candidates) and i not in seen:
+                    seen.add(i)
+                    ordered.append(candidates[i])
+            except Exception:
+                continue
+        if not ordered:
+            ordered = candidates
+        return ordered[:top_k]
+    except Exception as e:
+        print(f"Reranking failed, using original order: {e}")
+        return docs[:top_k]
+
 def retrieve_and_answer_with_memory(vector_db, query, user_id, session_id=None, chat_id=None):
     """Enhanced retrieval that uses message history for context AND appropriate model selection"""
     
@@ -435,6 +497,16 @@ def retrieve_and_answer_with_memory(vector_db, query, user_id, session_id=None, 
         docs = all_docs
         print(f"Retrieved {len(docs)} unique documents after query transformation.")
         # === END: Query Transformation Enhancement ===
+
+        # === START: LLM-based Reranking Stage ===
+        try:
+            if docs:
+                top_k = 5
+                docs = rerank_documents_with_llm(query, docs, top_k=top_k)
+                print(f"Reranked documents. Using top {len(docs)} for context.")
+        except Exception as e:
+            print(f"Reranking stage failed, proceeding without rerank: {e}")
+        # === END: LLM-based Reranking Stage ===
 
         # If no documents found, provide a general response
         if not docs:
