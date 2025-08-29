@@ -22,6 +22,7 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain.chains import RetrievalQA
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.output_parsers import StrOutputParser
 import threading
 import shutil
 from langchain.retrievers import EnsembleRetriever
@@ -49,6 +50,9 @@ def get_ethernet_ipv4():
             if interface.lower() == target_interface:
                 for addr in addrs:
                     if addr.family == socket.AF_INET:  # IPv4
+                        # Skip APIPA addresses (169.254.x.x)
+                        if str(addr.address).startswith("169.254."):
+                            continue
                         print(f"Found IP address {addr.address} on interface {interface}")
                         return addr.address
     
@@ -85,6 +89,7 @@ embedding_model = config["models"]["embedding_model"]
 llm_model = config["models"]["llm_model"]
 image_model_name = config["models"]["image_model"]
 code_model_name = config["models"]["code_model"]
+reranker_model_name = config["models"].get("reranker_model", llm_model)
 base_url = config["base_url"]
 code_prompt_template = config["code_prompt_template"]
 
@@ -126,6 +131,12 @@ llm = OllamaLLM(
 image_model = OllamaLLM(
     base_url=base_url,
     model=image_model_name
+)
+
+# Dedicated reranker LLM instance (for future document reranking)
+reranker_llm = OllamaLLM(
+    base_url=base_url,
+    model=reranker_model_name
 )
 
 temp_dir = tempfile.TemporaryDirectory()
@@ -379,19 +390,58 @@ def retrieve_and_answer_with_memory(vector_db, query, user_id, session_id=None, 
         # Set up retrievers and try multiple approaches
         retrievers = setup_retrievers(vector_db, model)  # Pass the selected model
         docs = []
-        
-        # Try retrievers in order of preference
-        for retriever_name in ["Base", "Similarity", "MMR"]:
-            if retriever_name in retrievers:
-                try:
-                    retriever = retrievers[retriever_name]
-                    docs = retriever.invoke(query)
-                    if docs:
-                        print(f"Successfully retrieved {len(docs)} documents using {retriever_name} retriever")
-                        break
-                except Exception as e:
-                    print(f"Error with {retriever_name} retriever: {e}")
-                    continue
+
+        # Query transformation: expand query and aggregate results
+        try:
+            def transform_query(q: str, llm_inst):
+                prompt = PromptTemplate(
+                    input_variables=["query"],
+                    template=(
+                        "You are a helpful assistant that rewrites search queries into diverse alternatives.\n"
+                        "Given the user query below, produce 3 short, distinct alternative queries that might retrieve relevant documents.\n"
+                        "Return them as plain lines without numbering or extra text.\n\n"
+                        "Query: {query}\n"
+                    ),
+                )
+                raw = llm_inst.invoke(prompt.format(query=q))
+                text = str(raw)
+                lines = [ln.strip(" -•:\t") for ln in text.splitlines()]
+                alts = [ln for ln in lines if ln]
+                return alts[:3]
+
+            transformed = transform_query(query, llm)
+            all_queries = [query] + transformed
+            print(f"Original Query: {query}")
+            print(f"Transformed Queries: {transformed}")
+
+            ensemble = retrievers.get("Ensemble", retrievers.get("Base"))
+            gathered, seen = [], set()
+            if ensemble is not None:
+                for q in all_queries:
+                    retrieved = ensemble.invoke(q)
+                    for d in retrieved:
+                        if getattr(d, 'page_content', None) and d.page_content not in seen:
+                            gathered.append(d)
+                            seen.add(d.page_content)
+                if gathered:
+                    docs = gathered
+                    print(f"Retrieved {len(docs)} unique documents after query transformation.")
+        except Exception as e:
+            print(f"Query transformation failed, falling back to standard retrieval: {e}")
+
+        # Fallback standard retrieval if nothing found
+        if not docs:
+            for retriever_name in ["Similarity", "Base", "MMR"]:
+                if retriever_name in retrievers:
+                    try:
+                        retriever = retrievers[retriever_name]
+                        docs = retriever.invoke(query)
+                        if docs:
+                            print(f"Successfully retrieved {len(docs)} documents using {retriever_name} retriever")
+                            break
+                    except Exception as e:
+                        print(f"Error with {retriever_name} retriever: {e}")
+                        continue
         
         # If no documents found, provide a general response
         if not docs:

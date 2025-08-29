@@ -697,11 +697,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal"),title="FireX",fill_heigh
     )
         
     msg = gr.MultimodalTextbox(placeholder="Enter query or upload a file...", show_label=False, elem_id="input-textbox")
-    gr.Examples(
-        examples=["Key features of XDLC", "Generate diagram for ZIC-4a wiring with its devices", "How to resolve ground fault issue"],
-        inputs=msg,
-        label="Suggestions",
-    )
+    
 
     # Add suggestion box for feedback
     with gr.Column(visible=False, elem_classes="suggestion-box") as suggestion_container:
