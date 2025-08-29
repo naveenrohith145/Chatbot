@@ -52,6 +52,9 @@ def get_ethernet_ipv4():
             if interface.lower() == target_interface:
                 for addr in addrs:
                     if addr.family == socket.AF_INET:  # IPv4
+                        # Skip APIPA addresses (169.254.x.x)
+                        if str(addr.address).startswith("169.254."):
+                            continue
                         print(f"Found IP address {addr.address} on interface {interface}")
                         return addr.address
     
