@@ -631,7 +631,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal"),title="FireX",fill_heigh
     # Create the sidebar
     with gr.Sidebar(open=False):
         gr.Markdown('<span style="font-size:25px; font-family: Arial; color:#13acac; font-weight:bold;">SIEMENS</span>')
-        gr.Markdown("Welcome to FireX Technical Agent!")
+        gr.Markdown("Welcome to Siemens Technical Agent!")
 
         # Add New Chat button (positioned above Prompt Library)
         new_chat_btn = gr.Button("✚ New Chat", variant="primary", size="md")
@@ -676,8 +676,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal"),title="FireX",fill_heigh
             chat_btn_9 = gr.Button("", variant="secondary", size="sm", scale=1, visible=False)
 
     # Main chat interface
-    gr.Markdown('<span style="font-size:28px; font-weight:bold;">🔥FireX</span>')
-    # gr.Markdown("Welcome to FireX! Ready to assist you.")
+    gr.Markdown('<span style="font-size:28px; font-weight:bold;">Control Pro</span>')
+    # gr.Markdown("Welcome to Siemens! Ready to assist you.")
 
     # Initialize chat state - this is crucial for proper functioning
     chat_history = gr.State([])

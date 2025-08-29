@@ -29,6 +29,7 @@ from functools import lru_cache
 from datetime import datetime
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.output_parsers import StrOutputParser
 
 from src.utils.agents.agent import GraphvizTool, MermaidTool
 from src.database import databaseFunctionality as dbf
@@ -83,6 +84,7 @@ embedding_model = config["models"]["embedding_model"]
 llm_model = config["models"]["llm_model"]
 image_model_name = config["models"]["image_model"]
 code_model_name = config["models"]["code_model"]
+reranker_model_name = config["models"].get("reranker_model", llm_model)
 base_url = config["base_url"]
 code_prompt_template = config["code_prompt_template"]
 
@@ -125,6 +127,12 @@ llm = OllamaLLM(
 image_model = OllamaLLM(
     base_url=base_url,
     model=image_model_name
+)
+
+# Dedicated reranker LLM instance (for future reranking integration)
+reranker_llm = OllamaLLM(
+    base_url=base_url,
+    model=reranker_model_name
 )
 
 temp_dir = tempfile.TemporaryDirectory()
@@ -400,90 +408,68 @@ def retrieve_and_answer_with_memory(vector_db, query, user_id, session_id=None, 
     try:
         # Get or create message history for this user/session
         if chat_id and session_id:
-            # If loading existing chat, load its history
             message_history = load_existing_chat_into_history(user_id, chat_id, session_id)
         else:
-            # Use or create history for current session
             message_history = get_or_create_message_history(user_id, session_id)
-        
+
         # SELECT APPROPRIATE MODEL BASED ON QUERY CONTENT
         model, is_code_query = get_appropriate_model(query)
-        
-        # Log which model is being used
-        if is_code_query:
-            print(f"\n--- USING MODEL: {code_model_name} FOR MEMORY-AWARE RETRIEVAL ---")
-        else:
-            print(f"\n--- USING MODEL: {llm_model} FOR MEMORY-AWARE RETRIEVAL ---")
-        
-        # Set up retrievers and try multiple approaches
-        retrievers = setup_retrievers(vector_db, model)  # Pass the selected model
-        docs = []
-        
-        # Try retrievers in order of preference
-        for retriever_name in ["Base", "Similarity", "MMR"]:
-            if retriever_name in retrievers:
-                try:
-                    retriever = retrievers[retriever_name]
-                    docs = retriever.invoke(query)
-                    if docs:
-                        print(f"Successfully retrieved {len(docs)} documents using {retriever_name} retriever")
-                        break
-                except Exception as e:
-                    print(f"Error with {retriever_name} retriever: {e}")
-                    continue
-        
+
+        # === START: Query Transformation Enhancement ===
+        transformed_queries = transform_query(query, llm)
+        all_queries = [query] + transformed_queries
+        print(f"Original Query: {query}")
+        print(f"Transformed Queries: {transformed_queries}")
+
+        # Use Ensemble retriever for robust search
+        retrievers = setup_retrievers(vector_db, llm)
+        ensemble_retriever = retrievers.get("Ensemble", retrievers["Base"])
+        all_docs = []
+        retrieved_contents = set()
+        for q in all_queries:
+            retrieved_docs = ensemble_retriever.invoke(q)
+            for doc in retrieved_docs:
+                if doc.page_content not in retrieved_contents:
+                    all_docs.append(doc)
+                    retrieved_contents.add(doc.page_content)
+        docs = all_docs
+        print(f"Retrieved {len(docs)} unique documents after query transformation.")
+        # === END: Query Transformation Enhancement ===
+
         # If no documents found, provide a general response
         if not docs:
             print("No relevant documents found, providing general response")
             context = "No specific document context available."
         else:
-            # Extract context from documents
             context_parts = []
             sources = set()
-            
             for doc in docs:
                 context_parts.append(doc.page_content)
                 if "source" in doc.metadata:
                     sources.add(os.path.basename(doc.metadata["source"]))
-            
             context = "\n\n---\n\n".join(context_parts)
-        
+
         # Create contextual prompt with conversation history and appropriate model
         full_prompt = create_contextual_prompt_with_model(query, context, message_history, model, is_code_query)
-        
-        # Get response from the SELECTED MODEL
         response = model.invoke(full_prompt)
         answer = str(response)
-        
-        # Remove think blocks if present (for code model)
         if is_code_query:
             answer = remove_think_blocks(answer)
-        
-        # Add source citations if available
         if docs:
             sources = set()
             for doc in docs:
                 if "source" in doc.metadata:
                     sources.add(os.path.basename(doc.metadata["source"]))
-            
             if sources and "Sources:" not in answer:
                 answer += f"\n\nSources: {', '.join(sources)}"
-        
-        # Update message history with new exchange
         message_history.add_user_message(query)
         message_history.add_ai_message(answer)
-        
-        # Limit history size
-        if len(message_history.messages) > MAX_MEMORY_MESSAGES * 2:  # *2 because we have pairs
-            # Keep only the most recent messages
+        if len(message_history.messages) > MAX_MEMORY_MESSAGES * 2:
             message_history.messages = message_history.messages[-MAX_MEMORY_MESSAGES * 2:]
-        
         print(f"--- END OF {code_model_name if is_code_query else llm_model} RESPONSE ---\n")
         return answer
-        
     except Exception as e:
         print(f"Error in memory-aware retrieval: {e}")
-        # Fallback to original method
         return retrieve_and_answer_with_best_retriever(vector_db, query, [])
 
 def handle_query_with_appropriate_model(query, vector_db, conversation_history, user_id=None, session_id=None, chat_id=None):
@@ -842,7 +828,7 @@ def process_and_display_diagram_with_retry(query, result, max_attempts=3):
     current_code = code_block
     retry_count = 0
     
-    while retry_count < max_attempts:
+    while (retry_count < max_attempts):
         try:
             print(f"Attempting diagram generation (attempt {retry_count + 1}/{max_attempts})...")
             
@@ -908,6 +894,36 @@ def process_and_display_diagram_with_retry(query, result, max_attempts=3):
 def process_and_display_diagram(query, result):
     """Process and display diagram - now calls the enhanced version with retry"""
     return process_and_display_diagram_with_retry(query, result, max_attempts=3)
+
+def transform_query(query: str, llm) -> list[str]:
+    """
+    Transforms the user's query into a list of alternative queries using an LLM.
+    Args:
+        query: The original user query.
+        llm: The language model instance to use for the transformation.
+    Returns:
+        A list of transformed queries.
+    """
+    query_transform_prompt = PromptTemplate.from_template(
+        """You are an expert at query expansion for information retrieval.
+        Your task is to generate 3 diverse and specific alternative queries based on the user's original query.
+        The goal is to improve the chances of finding relevant documents in a vector database.
+
+        Consider the following aspects when generating the queries:
+        - Rephrase the query with different keywords.
+        - Break down the query into more specific sub-questions.
+        - Consider the user's potential intent and what they might be looking for.
+
+        Each generated query must be on a new line. Do not add any numbering or bullet points.
+
+        Original query: {query}
+        """
+    )
+    query_transformer = query_transform_prompt | llm | StrOutputParser()
+    transformed_queries_str = query_transformer.invoke({"query": query})
+    transformed_queries = transformed_queries_str.strip().split('\n')
+    # Filter out any empty strings that might result from the split
+    return [q for q in transformed_queries if q]
 
 # --- Test Case Generation Functions ---
 def is_test_case_generation_request(query):
@@ -1072,7 +1088,7 @@ def get_loader(file_path, doc):
 
 def load_excel_or_csv(file_path, doc):
     try:
-        if doc.lower().endswith('.csv'):
+        if (doc.lower().endswith('.csv')):
             df = pd.read_csv(file_path, on_bad_lines='skip', low_memory=False)
         else:
             # Read all sheets from Excel file

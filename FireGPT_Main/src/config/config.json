@@ -28,7 +28,8 @@
         "embedding_model": "mxbai-embed-large",
         "llm_model": "mistral-nemo:latest",
         "code_model": "deepseek-r1:32b",
-        "image_model": "llama3.2-vision:latest"
+        "image_model": "llama3.2-vision:latest",
+        "reranker_model": "deepseek-r1:32b"
     },
     "base_url": "http://172.17.16.39:11434"
 }
